@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Hosted matrix or a single self-hosted operating system
+        type: choice
+        default: hosted
+        options:
+          - hosted
+          - Windows
+          - Linux
+          - macOS
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify (${{ matrix.os }})
+    if: github.event_name != 'workflow_dispatch' || inputs.runner == 'hosted' || github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: >-
+          ${{
+            fromJSON(
+              inputs.runner && inputs.runner != 'hosted' && format('["{0}"]', inputs.runner)
+              || '["Windows", "Linux", "macOS"]'
+            )
+          }}
+    runs-on: >-
+      ${{
+        inputs.runner && inputs.runner != 'hosted'
+        && fromJSON(format('["self-hosted", "{0}"]', matrix.os))
+        || fromJSON('{"Windows":"windows-latest","Linux":"ubuntu-latest","macOS":"macos-latest"}')[matrix.os]
+      }}
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux' && (github.event_name != 'workflow_dispatch' || inputs.runner == 'hosted')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig1-dev libfreetype-dev libwayland-dev libx11-dev libx11-xcb-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Test terminal logic and PTY
+        run: cargo test --locked
+
+      - name: Build moe
+        run: cargo build --locked
