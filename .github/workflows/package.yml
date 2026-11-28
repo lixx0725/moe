@@ -1,0 +1,167 @@
+name: Package
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Windows
+            runner: windows-2025
+          - platform: macOS
+            runner: macos-15
+          - platform: Linux
+            runner: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Extract source ZIP
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'moe-source.zip'
+          git archive '--format=zip' "--output=$archive" HEAD
+          if ($LASTEXITCODE -ne 0) { throw '无法生成源码 ZIP。' }
+          Expand-Archive -LiteralPath $archive -DestinationPath 'source package'
+          if (Test-Path -LiteralPath 'source package/.git') { throw '打包测试需要纯源码。' }
+          $versionLine = (Select-String -LiteralPath 'source package/Cargo.toml' -Pattern '^version = "(\d+\.\d+\.\d+)"$').Matches
+          if ($versionLine.Count -ne 1) { throw '无法读取 Cargo 版本。' }
+          $version = $versionLine[0].Groups[1].Value
+          $parsed = [version]$version
+          $next = "$($parsed.Major).$($parsed.Minor).$($parsed.Build + 1)"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value @(
+            "MOE_TEST_VERSION=$version"
+            "MOE_TEST_UPGRADE_VERSION=$next"
+            "CARGO_TARGET_DIR=$(Join-Path $env:RUNNER_TEMP 'moe-package-target')"
+          ) -Encoding utf8
+
+      - name: Prepare Linux build dependencies
+        if: runner.os == 'Linux'
+        working-directory: source package
+        shell: bash
+        run: bash scripts/tools/setup-linux.sh --yes
+
+      - name: Build Windows setup and check checksum
+        if: runner.os == 'Windows'
+        working-directory: source package
+        shell: pwsh
+        run: |
+          & './scripts/package-windows.ps1' -Unattended
+          $version = $env:MOE_TEST_VERSION
+          $directory = "dist/$version/windows-x64"
+          $name = "moe-$version-windows-x64-setup.exe"
+          $hash = (Get-FileHash -LiteralPath "$directory/$name" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ((Get-Content -LiteralPath "$directory/SHA256SUMS.txt") -cne "$hash  $name") {
+            throw 'Windows 安装包校验失败。'
+          }
+
+      - name: Verify macOS disk image and app bundle
+        if: runner.os == 'macOS'
+        working-directory: source package
+        shell: bash
+        run: |
+          bash scripts/package-macos.sh
+          version="$MOE_TEST_VERSION"
+          directory="dist/$version/macos-arm64"
+          image="$directory/moe-$version-macos-arm64.dmg"
+          (cd "$directory" && shasum -a 256 -c SHA256SUMS.txt)
+          hdiutil verify "$image"
+          mountpoint=$(mktemp -d "$RUNNER_TEMP/moe-dmg.XXXXXX")
+          hdiutil attach -nobrowse -readonly -mountpoint "$mountpoint" "$image"
+          trap 'hdiutil detach "$mountpoint"; rmdir "$mountpoint"' EXIT
+          app="$mountpoint/Moe.app"
+          test -L "$mountpoint/Applications"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist" | grep -Fx "$version"
+          codesign --verify --strict "$app"
+          lipo -verify_arch arm64 "$app/Contents/MacOS/moe"
+          test "$("$app/Contents/MacOS/moe" --version)" = "moe $version"
+
+      - name: Build and check Linux packages
+        if: runner.os == 'Linux'
+        working-directory: source package
+        shell: bash
+        run: |
+          bash scripts/package-linux.sh --format deb
+          bash scripts/package-linux.sh --format tar.gz
+          directory="dist/$MOE_TEST_VERSION/linux-x64"
+          deb="$directory/moe_${MOE_TEST_VERSION}_amd64.deb"
+          (cd "$directory" && sha256sum -c SHA256SUMS.txt)
+          test "$(dpkg-deb -f "$deb" Package)" = moe
+          test "$(dpkg-deb -f "$deb" Version)" = "$MOE_TEST_VERSION"
+          test "$(dpkg-deb -f "$deb" Architecture)" = amd64
+          file_name="moe-$MOE_TEST_VERSION-linux-x64"
+          extract=$(mktemp -d "$RUNNER_TEMP/moe-portable.XXXXXX")
+          trap 'rm -rf "$extract"' EXIT
+          tar -xzf "$directory/$file_name.tar.gz" -C "$extract"
+          test "$("$extract/$file_name/moe" --version)" = "moe $MOE_TEST_VERSION"
+
+      - name: Prepare a higher version in the source copy
+        if: runner.os != 'macOS'
+        working-directory: source package
+        shell: pwsh
+        run: |
+          $version = $env:MOE_TEST_VERSION
+          $next = $env:MOE_TEST_UPGRADE_VERSION
+          $line = 'version = "' + $version + '"'
+          $replacement = 'version = "' + $next + '"'
+          $manifest = (Get-Item -LiteralPath Cargo.toml).FullName
+          $lock = (Get-Item -LiteralPath Cargo.lock).FullName
+          $lockedLine = "name = `"moe`"`n$line"
+          $manifestText = [IO.File]::ReadAllText($manifest)
+          $lockText = [IO.File]::ReadAllText($lock)
+          if (-not $manifestText.Contains($line) -or -not $lockText.Contains($lockedLine)) {
+            throw '升级夹具找不到主包版本。'
+          }
+          [IO.File]::WriteAllText($manifest, $manifestText.Replace($line, $replacement))
+          [IO.File]::WriteAllText($lock, $lockText.Replace($lockedLine, "name = `"moe`"`n$replacement"))
+
+      - name: Test Windows setup, upgrade and uninstall
+        if: runner.os == 'Windows'
+        working-directory: source package
+        shell: pwsh
+        run: |
+          # 模拟清理源码的 target，并验证便携编译器能在无需重新下载时继续打包。
+          . './scripts/tools/inno-tools.ps1'
+          $installer = Join-Path $env:LOCALAPPDATA "moe-build-tools/innosetup-$moeInnoVersion-x64.exe"
+          if (Test-Path -LiteralPath 'target') { Remove-Item -LiteralPath 'target' -Recurse -Force }
+          if (Test-Path -LiteralPath $installer) { Remove-Item -LiteralPath $installer }
+          & './scripts/package-windows.ps1' -Unattended
+          if (Test-Path -LiteralPath $installer) { throw '打包重新下载了 Inno Setup，未复用便携编译器。' }
+          $first = $env:MOE_TEST_VERSION
+          $next = $env:MOE_TEST_UPGRADE_VERSION
+          & './scripts/test-package-windows.ps1' -Version $first -UpgradeVersion $next `
+            -Package "dist/$first/windows-x64/moe-$first-windows-x64-setup.exe" `
+            -UpgradePackage "dist/$next/windows-x64/moe-$next-windows-x64-setup.exe"
+
+      - name: Test Debian package install, upgrade and removal
+        if: runner.os == 'Linux'
+        working-directory: source package
+        shell: bash
+        run: |
+          bash scripts/package-linux.sh --format deb
+          first="$MOE_TEST_VERSION"
+          next="$MOE_TEST_UPGRADE_VERSION"
+          mkdir -p "$HOME/.local/share/moe"
+          marker=$(mktemp "$HOME/.local/share/moe/.package-test.XXXXXX")
+          trap 'rm -f "$marker"' EXIT
+          printf '%s' package-test > "$marker"
+          sudo apt-get install -y --no-install-recommends "./dist/$first/linux-x64/moe_${first}_amd64.deb"
+          test "$(moe --version)" = "moe $first"
+          sudo apt-get install -y --no-install-recommends "./dist/$next/linux-x64/moe_${next}_amd64.deb"
+          test "$(moe --version)" = "moe $next"
+          sudo apt-get remove -y moe
+          test ! -e /usr/bin/moe
+          test "$(cat "$marker")" = package-test

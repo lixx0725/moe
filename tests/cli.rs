@@ -4,7 +4,12 @@ use std::process::Command;
 
 /// 创建无需显示服务器的命令行测试进程。
 fn moe() -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_moe"));
+    #[cfg(windows)]
+    // Windows 通过安装包使用的控制台启动器测试参数、管道和退出码。
+    let executable = env!("CARGO_BIN_EXE_moe-cli");
+    #[cfg(not(windows))]
+    let executable = env!("CARGO_BIN_EXE_moe");
+    let mut command = Command::new(executable);
     command.env_remove("DISPLAY").env_remove("WAYLAND_DISPLAY");
     command
 }
@@ -22,10 +27,12 @@ fn version_succeeds_without_a_display() {
 
 #[test]
 fn help_describes_shell_selection_without_a_display() {
-    let output = moe().arg("--help").output().expect("运行 moe --help");
-    assert!(output.status.success(), "{output:?}");
-    let help = String::from_utf8(output.stdout).expect("帮助输出为 UTF-8");
-    assert!(help.contains("--shell"), "{help}");
+    for flag in ["-h", "--help"] {
+        let output = moe().arg(flag).output().expect("运行 moe 帮助命令");
+        assert!(output.status.success(), "{output:?}");
+        let help = String::from_utf8(output.stdout).expect("帮助输出为 UTF-8");
+        assert!(help.contains("--shell"), "{help}");
+    }
 }
 
 #[test]

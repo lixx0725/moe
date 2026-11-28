@@ -1,0 +1,2 @@
+Build Windows, macOS, and Linux packages directly from the Moe source.
+Windows Setup preserves the installation location and PATH choice on upgrade.

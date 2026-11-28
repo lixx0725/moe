@@ -13,6 +13,8 @@ pub(crate) fn run(
     program: Option<PathBuf>,
     shell_args: Vec<OsString>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(windows)]
+    let _installation_guard = crate::platform::windows::hold_installation_guard()?;
     let services = AppServices::new();
     let launch = shell::Launch::resolve(program, shell_args, services.paths.working_directory())?;
     let (session, events) =

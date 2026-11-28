@@ -2,6 +2,8 @@
 
 #[cfg(unix)]
 mod unix;
+#[cfg(windows)]
+pub(crate) mod windows;
 #[cfg(unix)]
 pub(crate) use unix::account_shell;
 

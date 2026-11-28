@@ -22,6 +22,10 @@ cargo run --locked
 
 Ubuntu 使用的具体开发包见 [CI 配置](.github/workflows/ci.yml)。Rust 工具链以 `rust-toolchain.toml` 为准。
 
+## 打包与安装
+
+下载源码后，可在目标系统运行 `scripts/` 中对应的脚本生成 Windows 安装器、macOS DMG、Linux DEB 或便携包。依赖、命令及升级说明见[从源码构建安装包](docs/building.md)。
+
 ## 选择 Shell
 
 `moe --shell <程序或路径>` 指定本次启动的 Shell。程序名从 PATH 查找，带目录的相对路径从当前工作目录解析。带空格的路径请用当前 Shell 的引用语法包为一个参数。`--` 后的参数按各自边界传给所选 Shell。省略 `--shell` 时使用上表的平台默认值。

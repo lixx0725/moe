@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Moe
+GenericName=Terminal Emulator
+GenericName[zh_CN]=终端模拟器
+Comment=Open a local shell
+Comment[zh_CN]=打开本机 Shell
+Exec=moe
+Icon=moe
+Terminal=false
+Categories=System;TerminalEmulator;
