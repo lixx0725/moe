@@ -1,21 +1,27 @@
 //! 将控制键转换为终端序列，普通文字通过输入法接口提交。
 
-use gpui::Keystroke;
+/// 窗口输入层已识别的终端按键。
+pub(crate) struct TerminalKey<'a> {
+    /// 已规范化的逻辑键名。
+    pub(crate) name: &'a str,
+    /// 键盘布局产生的文本。
+    pub(crate) text: Option<&'a str>,
+    /// Shift 是否按下。
+    pub(crate) shift: bool,
+    /// Alt 是否按下。
+    pub(crate) alt: bool,
+    /// Ctrl 是否按下。
+    pub(crate) control: bool,
+}
 
 const CSI: &[u8] = b"\x1b[";
 const SS3: &[u8] = b"\x1bO";
 const ESC: u8 = 0x1b;
 
-pub(crate) fn encode(stroke: &Keystroke, application_cursor: bool) -> Option<Vec<u8>> {
-    let modifiers = stroke.modifiers;
-    if modifiers.platform {
-        return None;
-    }
-    let name = stroke.key.as_str();
-    let parameter = 1
-        + u8::from(modifiers.shift)
-        + u8::from(modifiers.alt) * 2
-        + u8::from(modifiers.control) * 4;
+/// 根据终端模式生成 PTY 输入字节。
+pub(crate) fn encode(key: &TerminalKey<'_>, application_cursor: bool) -> Option<Vec<u8>> {
+    let name = key.name;
+    let parameter = 1 + u8::from(key.shift) + u8::from(key.alt) * 2 + u8::from(key.control) * 4;
 
     let cursor = match name {
         "up" => Some(b'A'),
@@ -50,26 +56,22 @@ pub(crate) fn encode(stroke: &Keystroke, application_cursor: bool) -> Option<Vec
     if let Some(number) = number {
         return Some(numbered_sequence(number, parameter));
     }
-    if name == "tab" && modifiers.shift {
+    if name == "tab" && key.shift {
         return Some(b"\x1b[Z".to_vec());
     }
     let byte = match name {
         "enter" => Some(b'\r'),
-        "backspace" => Some(if modifiers.control { 8 } else { 127 }),
+        "backspace" => Some(if key.control { 8 } else { 127 }),
         "tab" => Some(b'\t'),
         "escape" => return Some(vec![ESC]),
-        _ if modifiers.control => control_byte(name),
+        _ if key.control => control_byte(name),
         _ => None,
     };
     if let Some(byte) = byte {
-        return Some(if modifiers.alt {
-            vec![ESC, byte]
-        } else {
-            vec![byte]
-        });
+        return Some(if key.alt { vec![ESC, byte] } else { vec![byte] });
     }
-    if modifiers.alt && !modifiers.control {
-        let text = stroke.key_char.as_deref()?;
+    if key.alt && !key.control {
+        let text = key.text?;
         return Some([&[ESC], text.as_bytes()].concat());
     }
     None
@@ -115,6 +117,7 @@ fn control_byte(name: &str) -> Option<u8> {
     }
 }
 
+/// 按终端设置编码剪贴板文本。
 pub(crate) fn paste(text: &str, bracketed: bool) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(text.len() + if bracketed { 12 } else { 0 });
     if bracketed {
@@ -145,26 +148,23 @@ mod tests {
 
     #[test]
     fn controls_and_terminal_modes_encode_expected_bytes() {
-        for (key, application_cursor, expected) in [
-            ("ctrl-c", false, b"\x03".as_slice()),
-            ("ctrl-[", false, b"\x1b"),
-            ("up", false, b"\x1b[A"),
-            ("up", true, b"\x1bOA"),
-            ("ctrl-shift-left", true, b"\x1b[1;6D"),
-            ("alt-f5", false, b"\x1b[15;3~"),
+        for (name, shift, alt, control, application_cursor, expected) in [
+            ("c", false, false, true, false, b"\x03".as_slice()),
+            ("[", false, false, true, false, b"\x1b"),
+            ("up", false, false, false, false, b"\x1b[A"),
+            ("up", false, false, false, true, b"\x1bOA"),
+            ("left", true, false, true, true, b"\x1b[1;6D"),
+            ("f5", false, true, false, false, b"\x1b[15;3~"),
         ] {
-            let stroke = Keystroke::parse(key).unwrap();
-            assert_eq!(
-                encode(&stroke, application_cursor).as_deref(),
-                Some(expected)
-            );
+            let key = TerminalKey {
+                name,
+                text: None,
+                shift,
+                alt,
+                control,
+            };
+            assert_eq!(encode(&key, application_cursor).as_deref(), Some(expected));
         }
-    }
-
-    #[test]
-    fn plain_text_stays_in_the_native_input_path() {
-        assert_eq!(encode(&Keystroke::parse("a").unwrap(), false), None);
-        assert_eq!(encode(&Keystroke::parse("cmd-v").unwrap(), false), None);
     }
 
     #[test]

@@ -4,7 +4,6 @@ use alacritty_terminal::{
     term::color::{COUNT, Colors},
     vte::ansi::{Color, NamedColor, Rgb},
 };
-use gpui::Hsla;
 
 const FOREGROUND: u32 = 0xe2e8f0;
 const BACKGROUND: u32 = 0x171b24;
@@ -14,18 +13,18 @@ const ANSI16: [u32; 16] = [
     0xff9fa7, 0xa8e5ba, 0xffdb8e, 0xaacbff, 0xe0b7f5, 0x9de6e3, 0xf5f7fb,
 ];
 
-pub(crate) fn background() -> Hsla {
-    gpui::rgb(BACKGROUND).into()
+/// 默认终端背景。
+pub(crate) fn background() -> Rgb {
+    unpack(BACKGROUND)
 }
 
-pub(crate) fn resolve(color: Color, overrides: &Colors) -> Hsla {
-    let rgb = match color {
+/// 解析 ANSI 颜色和程序临时设置的调色板。
+pub(crate) fn resolve(color: Color, overrides: &Colors) -> Rgb {
+    match color {
         Color::Spec(value) => value,
         Color::Indexed(index) => reported(usize::from(index), overrides),
         Color::Named(name) => reported(name as usize, overrides),
-    };
-    let packed = u32::from_be_bytes([0, rgb.r, rgb.g, rgb.b]);
-    gpui::rgb(packed).into()
+    }
 }
 
 /// OSC 查询和绘制共用颜色解析，保持程序读回的值与显示一致。
@@ -106,7 +105,7 @@ mod tests {
         assert_eq!(reported(257, &palette), Rgb { r: 7, g: 13, b: 31 });
         assert_eq!(
             resolve(Color::Named(NamedColor::Background), &palette),
-            gpui::rgb(0x070d1f).into()
+            Rgb { r: 7, g: 13, b: 31 }
         );
     }
 }

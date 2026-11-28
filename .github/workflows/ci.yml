@@ -59,8 +59,11 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
-      - name: Test terminal logic and PTY
-        run: cargo test --locked
+      - name: Test terminal logic and CLI
+        run: cargo test --locked -- --skip session::tests::pty_
+
+      - name: Test real PTY on this operating system
+        run: cargo test --locked session::tests::pty_ -- --test-threads=1
 
       - name: Build moe
         run: cargo build --locked

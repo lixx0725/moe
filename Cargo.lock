@@ -3001,7 +3001,7 @@ dependencies = [
 
 [[package]]
 name = "moe"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "alacritty_terminal",
  "dirs 7.0.0",

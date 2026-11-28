@@ -1,11 +1,22 @@
 //! 根据当前系统选择默认 Shell，向 PTY 传递启动目录和参数。
 
 use alacritty_terminal::tty::{Options, Shell};
-use std::{env, io, path::PathBuf};
+#[cfg(windows)]
+use std::env;
+use std::{io, path::PathBuf};
 
-/// 每次启动从调用者所在目录开始；通过桌面启动时可回退到用户目录。
-pub(crate) fn options() -> io::Result<Options> {
+/// 以应用选择的目录启动默认 Shell。
+pub(crate) fn options(working_directory: Option<PathBuf>) -> io::Result<Options> {
     let (program, args) = default_shell()?;
+    launch_options(program, args, working_directory)
+}
+
+/// 将 Shell 路径和参数转换为 PTY 配置。
+fn launch_options(
+    program: PathBuf,
+    args: Vec<String>,
+    working_directory: Option<PathBuf>,
+) -> io::Result<Options> {
     let program = program.into_os_string().into_string().map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -14,10 +25,7 @@ pub(crate) fn options() -> io::Result<Options> {
     })?;
     Ok(Options {
         shell: Some(Shell::new(program, args)),
-        working_directory: env::current_dir()
-            .ok()
-            .filter(|path| path.is_dir())
-            .or_else(dirs::home_dir),
+        working_directory,
         drain_on_exit: true,
         env: [
             ("TERM".into(), "xterm-256color".into()),
@@ -27,6 +35,14 @@ pub(crate) fn options() -> io::Result<Options> {
         #[cfg(windows)]
         escape_args: true,
     })
+}
+
+/// 在 Windows 测试中跳过本机 PowerShell 启动脚本。
+#[cfg(all(test, windows))]
+pub(crate) fn test_options(working_directory: Option<PathBuf>) -> io::Result<Options> {
+    let (program, mut args) = default_shell()?;
+    args.push("-NoProfile".to_owned());
+    launch_options(program, args, working_directory)
 }
 
 #[cfg(windows)]
@@ -56,7 +72,7 @@ fn default_shell() -> io::Result<(PathBuf, Vec<String>)> {
     #[cfg(not(target_os = "macos"))]
     let fallback = "/bin/sh";
 
-    account_shell()
+    crate::platform::account_shell()
         .into_iter()
         .chain([PathBuf::from(fallback), PathBuf::from("/bin/sh")])
         .find(|path| {
@@ -72,34 +88,4 @@ fn default_shell() -> io::Result<(PathBuf, Vec<String>)> {
                 "no executable login shell was found",
             )
         })
-}
-
-#[cfg(unix)]
-fn account_shell() -> Option<PathBuf> {
-    use std::{
-        ffi::{CStr, OsStr},
-        mem::MaybeUninit,
-        os::unix::ffi::OsStrExt,
-        ptr,
-    };
-
-    let mut entry = MaybeUninit::<libc::passwd>::uninit();
-    let mut buffer = vec![0u8; 16 * 1024];
-    let mut found = ptr::null_mut();
-    // SAFETY: passwd 及缓冲区在查询期间有效；成功时在释放缓冲区前复制路径。
-    unsafe {
-        let result = libc::getpwuid_r(
-            libc::getuid(),
-            entry.as_mut_ptr(),
-            buffer.as_mut_ptr().cast(),
-            buffer.len(),
-            &mut found,
-        );
-        if result != 0 || found.is_null() || (*found).pw_shell.is_null() {
-            return None;
-        }
-        Some(PathBuf::from(OsStr::from_bytes(
-            CStr::from_ptr((*found).pw_shell).to_bytes(),
-        )))
-    }
 }
