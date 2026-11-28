@@ -13,5 +13,5 @@ mod workspace;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    cli::run(std::env::args_os().skip(1))
+    cli::run(std::env::args_os())
 }

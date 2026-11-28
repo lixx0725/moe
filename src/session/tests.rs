@@ -9,12 +9,15 @@ use alacritty_terminal::{
 use futures::channel::mpsc::UnboundedReceiver;
 use std::{
     collections::VecDeque,
+    ffi::OsString,
+    fs,
+    path::PathBuf,
     thread,
     time::{Duration, Instant},
 };
 
 use super::{EndReason, Session, SessionEvent, SessionUpdate};
-use crate::app::paths::AppPaths;
+use crate::{app::paths::AppPaths, shell::Launch};
 
 const DEADLINE: Duration = Duration::from_secs(15);
 
@@ -132,14 +135,20 @@ impl Harness {
 fn fixture() -> Harness {
     let directory = AppPaths::discover().working_directory();
     #[cfg(windows)]
-    let options = crate::shell::test_options(directory).expect("获取无启动脚本的 PowerShell");
+    let launch = Launch::resolve(None, vec![OsString::from("-NoProfile")], directory);
+    #[cfg(unix)]
+    let launch = Launch::resolve(
+        Some(PathBuf::from("/bin/sh")),
+        vec![OsString::from("-i")],
+        directory,
+    );
+    let options = launch
+        .expect("选择测试 Shell")
+        .options()
+        .expect("构建测试 Shell 的 PTY 参数");
     #[cfg(unix)]
     let options = {
-        let mut options = crate::shell::options(directory).expect("获取默认 Shell 配置");
-        options.shell = Some(alacritty_terminal::tty::Shell::new(
-            "/bin/sh".to_owned(),
-            vec!["-i".to_owned()],
-        ));
+        let mut options = options;
         options.env.insert("ENV".to_owned(), String::new());
         options
     };
@@ -154,7 +163,8 @@ fn command_for_shell<'a>(windows: &'a str, unix: &'a str) -> &'a str {
 #[test]
 fn pty_default_shell_executes_and_exits() {
     let directory = AppPaths::discover().working_directory();
-    let mut harness = Harness::start(crate::shell::options(directory).expect("发现平台默认 Shell"));
+    let launch = Launch::resolve(None, Vec::new(), directory).expect("发现平台默认 Shell");
+    let mut harness = Harness::start(launch.options().expect("构建默认 PTY 参数"));
     harness.command(command_for_shell(
         "Write-Host ('moe_' + 'ready')",
         "printf 'moe_%s\\n' ready",
@@ -162,6 +172,90 @@ fn pty_default_shell_executes_and_exits() {
     harness.wait_for("moe_ready");
     harness.command("exit");
     assert!(matches!(harness.wait_for_end(), EndReason::Shell(_)));
+}
+
+/// 创建包含空格和中文的工作目录，并写入供 Shell 查询的文件。
+fn shell_working_directory() -> tempfile::TempDir {
+    let directory = tempfile::Builder::new()
+        .prefix("moe 测试 ")
+        .tempdir()
+        .expect("创建 Shell 工作目录");
+    fs::write(directory.path().join("moe-workdir-probe.txt"), b"")
+        .expect("在工作目录中创建验收文件");
+    directory
+}
+
+#[cfg(windows)]
+#[test]
+fn pty_explicit_cmd_observes_working_directory_and_startup_arguments() {
+    let directory = shell_working_directory();
+    let launch = Launch::resolve(
+        Some(PathBuf::from("cmd.exe")),
+        ["/D", "/Q", "/V:ON"].map(OsString::from).to_vec(),
+        Some(directory.path().to_owned()),
+    )
+    .expect("从 PATH 选择 CMD");
+    let mut harness = Harness::start(launch.options().expect("构建 CMD 的 PTY 参数"));
+    harness.command("set MOE_SELECTED=cmd");
+    harness.command("if exist moe-workdir-probe.txt echo moe_!MOE_SELECTED!");
+    harness.wait_for("moe_cmd");
+    harness.command("exit");
+    assert!(matches!(harness.wait_for_end(), EndReason::Shell(_)));
+}
+
+#[cfg(windows)]
+#[test]
+fn pty_explicit_powershell_runs_unicode_startup_command() {
+    let directory = shell_working_directory();
+    let default = Launch::resolve(None, Vec::new(), None).expect("发现本机 PowerShell");
+    let edition = if default.program().ends_with("pwsh.exe") {
+        "Core"
+    } else {
+        "Desktop"
+    };
+    let launch = Launch::resolve(
+        Some(default.program().to_owned()),
+        [
+            "-NoProfile",
+            "-Command",
+            "if (Test-Path -LiteralPath 'moe-workdir-probe.txt') { Write-Host -NoNewline ('moe_' + $PSVersionTable.PSEdition + '_参数 空格') }",
+        ].map(OsString::from).to_vec(),
+        Some(directory.path().to_owned()),
+    )
+    .expect("按路径显式选择 PowerShell");
+    let mut harness = Harness::start(launch.options().expect("构建 PowerShell 的 PTY 参数"));
+    assert!(matches!(harness.wait_for_end(), EndReason::Shell(_)));
+    assert!(
+        harness
+            .screen()
+            .contains(&format!("moe_{edition}_参数 空格"))
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn pty_explicit_shell_keeps_argument_boundaries_and_working_directory() {
+    let directory = shell_working_directory();
+    let executable = directory.path().join("指定 Shell");
+    std::os::unix::fs::symlink("/bin/bash", &executable).expect("在含中文和空格的路径引用 Bash");
+    let launch = Launch::resolve(
+        Some(executable),
+        [
+            "-c",
+            "test -f moe-workdir-probe.txt && test \"$2\" = '' && printf 'moe_%s:%s' \"$1\" \"$3\"",
+            "moe",
+            "参数 空格",
+            "",
+            "--help",
+        ]
+        .map(OsString::from)
+        .to_vec(),
+        Some(directory.path().to_owned()),
+    )
+    .expect("按路径显式选择 Bash");
+    let mut harness = Harness::start(launch.options().expect("构建 Bash 的 PTY 参数"));
+    assert!(matches!(harness.wait_for_end(), EndReason::Shell(_)));
+    assert!(harness.screen().contains("moe_参数 空格:--help"));
 }
 
 #[test]

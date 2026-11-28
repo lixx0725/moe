@@ -1,6 +1,6 @@
 [package]
 name = "moe"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2024"
 rust-version = "1.100"
 description = "A native terminal emulator for Windows, Linux, and macOS."
@@ -9,10 +9,15 @@ publish = false
 
 [dependencies]
 alacritty_terminal = { version = "0.26.0", default-features = false }
+clap = { version = "4.6.10", features = ["derive"] }
 dirs = "7.0.0"
 futures = "0.3.34"
 gpui = { package = "gpui-pre", version = "=0.3.14", default-features = false }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.14", default-features = false }
+thiserror = "2.0.21"
+
+[dev-dependencies]
+tempfile = "3.27.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.14", default-features = false, features = ["x11", "wayland"] }

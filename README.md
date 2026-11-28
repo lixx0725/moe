@@ -22,6 +22,25 @@ cargo run --locked
 
 Ubuntu 使用的具体开发包见 [CI 配置](.github/workflows/ci.yml)。Rust 工具链以 `rust-toolchain.toml` 为准。
 
+## 选择 Shell
+
+`moe --shell <程序或路径>` 指定本次启动的 Shell。程序名从 PATH 查找，带目录的相对路径从当前工作目录解析。带空格的路径请用当前 Shell 的引用语法包为一个参数。`--` 后的参数按各自边界传给所选 Shell。省略 `--shell` 时使用上表的平台默认值。
+
+Windows 示例
+
+```powershell
+moe --shell cmd.exe
+moe --shell pwsh.exe -- -NoLogo
+```
+
+Linux 和 macOS 示例
+
+```sh
+moe --shell /bin/bash
+```
+
+构建后尚未把可执行文件加入 PATH 时，可以使用 `cargo run --locked -- --shell <程序>`。用 `moe --help` 查看参数。显式选择启动失败时，错误提示包含程序和原因。
+
 ## 开发和验证
 
 ```text

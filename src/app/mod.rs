@@ -4,13 +4,21 @@ pub(crate) mod paths;
 mod services;
 
 use services::AppServices;
+use std::{ffi::OsString, path::PathBuf};
 
 use crate::{session::Session, shell, ui, workspace::Workspace};
 
-/// 启动图形应用，供 CLI 选择进入。
-pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
+/// 解析本次 Shell 选择，再启动会话与图形窗口。
+pub(crate) fn run(
+    program: Option<PathBuf>,
+    shell_args: Vec<OsString>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let services = AppServices::new();
-    let options = shell::options(services.paths.working_directory())?;
-    let (session, events) = Session::start(options)?;
+    let launch = shell::Launch::resolve(program, shell_args, services.paths.working_directory())?;
+    let (session, events) =
+        Session::start(launch.options()?).map_err(|source| shell::LaunchError::Start {
+            program: launch.program().to_owned(),
+            source,
+        })?;
     ui::run(Workspace::new(session), events)
 }
